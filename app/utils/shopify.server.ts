@@ -4,6 +4,9 @@
  * products, orders, customers, and more.
  */
 
+// Cache for the GraphQL schema
+let schemaCache: any = null;
+
 /**
  * Calls Shopify's Admin GraphQL API
  */
@@ -305,9 +308,13 @@ export async function executeShopifyQuery(
   try {
     const result = await callShopifyGraphQL(query, variables);
     
-    if (result.errors) {
+    if (result.errors && Array.isArray(result.errors) && result.errors.length > 0) {
+      // Safely extract error message
+      const errorMessage = result.errors[0]?.message || 
+                           (typeof result.errors[0] === 'string' ? result.errors[0] : 'Unknown error');
+      
       return { 
-        error: result.errors[0].message || "Error executing GraphQL query",
+        error: errorMessage,
         _graphql: result._graphql
       };
     }
@@ -332,9 +339,13 @@ export async function executeShopifyMutation(
   try {
     const result = await callShopifyGraphQL(mutation, variables);
     
-    if (result.errors) {
+    if (result.errors && Array.isArray(result.errors) && result.errors.length > 0) {
+      // Safely extract error message
+      const errorMessage = result.errors[0]?.message || 
+                           (typeof result.errors[0] === 'string' ? result.errors[0] : 'Unknown error');
+      
       return { 
-        error: result.errors[0].message || "Error executing GraphQL mutation",
+        error: errorMessage,
         _graphql: result._graphql
       };
     }
@@ -347,5 +358,90 @@ export async function executeShopifyMutation(
     return { 
       error: error.message || "Error executing GraphQL mutation"
     };
+  }
+}
+
+/**
+ * Introspect the Shopify GraphQL schema
+ * This allows the assistant to query for type information
+ */
+export async function introspectShopifySchema(options: { type?: string, field?: string } = {}) {
+  try {
+    // For specific type requests, use a focused query just for that type
+    if (options.type) {
+      // Query just for the specific type
+      const typeQuery = `
+        query {
+          __type(name: "${options.type}") {
+            name
+            kind
+            description
+            fields {
+              name
+              description
+              type {
+                name
+                kind
+                ofType {
+                  name
+                  kind
+                }
+              }
+              args {
+                name
+                description
+              }
+            }
+            inputFields {
+              name
+              description
+            }
+          }
+        }
+      `;
+      
+      const result = await callShopifyGraphQL(typeQuery);
+      if (result.errors && Array.isArray(result.errors) && result.errors.length > 0) {
+        const errorMessage = result.errors[0]?.message || "Error fetching type";
+        return { error: errorMessage };
+      }
+      
+      const typeInfo = result.data?.__type;
+      if (!typeInfo) {
+        return { error: `Type "${options.type}" not found in schema` };
+      }
+      
+      // If a field name is provided, extract just that field
+      if (options.field && typeInfo.fields) {
+        const field = typeInfo.fields.find((f: any) => f.name === options.field);
+        if (!field) {
+          return { error: `Field "${options.field}" not found on type "${options.type}"` };
+        }
+        return { data: { field } };
+      }
+      
+      return { data: { type: typeInfo } };
+    }
+    
+    // For general schema requests, return a limited set of common types
+    return {
+      data: {
+        commonTypes: [
+          "Product", "ProductVariant", "Order", "Customer", 
+          "Shop", "Collection", "Metafield", "Money"
+        ].map(typeName => ({
+          name: typeName,
+          usage: `Query this type directly with introspect_schema({ type: "${typeName}" })`
+        })),
+        queryExample: "To see available query fields, use introspect_schema({ type: 'QueryRoot' })",
+        mutationExample: "To see available mutation fields, use introspect_schema({ type: 'MutationRoot' })"
+      }
+    };
+  } catch (error: any) {
+    const errorMessage = error ? 
+      (typeof error.message === 'string' ? error.message : String(error)) : 
+      "Unknown error occurred";
+    
+    return { error: errorMessage };
   }
 }
